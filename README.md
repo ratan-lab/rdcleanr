@@ -38,10 +38,11 @@ This implementation proceeds in two separate steps. The first step takes in the 
 
 The output from this script is a file which the following columns
 ```bash
-GC : G+C bases in this region
+GC     : G+C bases in this region
 numpos : number of positions in the (sub)sample with the G+C content specified in column 1
-frags : number of fragments in the (sub)sample with the G+C content specified in column 1
-scale : a multiplier of fragment count that should be used for positions with the G+C content specified in column 1 within the [0,L] range of the position
+frags  : number of fragments in the (sub)sample with the G+C content specified in column 1
+scale  : a multiplier of fragment count that should be used for positions with the G+C content 
+        specified in column 1 within the [0,L] range of the position
 ```
 Additionally the last line in the output adds information about L which is useful in the next step.
 
