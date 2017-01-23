@@ -1,0 +1,313 @@
+#!/usr/bin/env python
+
+"""
+Compute the fragment rates for various GC lengths.
+Version: %(scriptVersion)s
+    
+    usage:
+     compute_gc_bias [options] reference.fa mappable.bed alignments.bam
+
+    where the options are:
+        -h,--help     : print usage and quit
+        -d,--debug    : print debug information
+        -t,--threads  : use these many threads [1]
+        -s,--shift    : ignore these many bases at the edge of the fragments [0]
+        -m,--minpos   : trust rates only if the number of positions with GC
+                        value exceed this threshold [1000]
+        -f,--fraction : subsample this fraction of positions to calculate the 
+                        rates [0.1]
+        -c,--chroms   : use this comma-separated list of chromosome in 
+                        calculating the rates only [all]
+        -v,--version  : print version and exit
+
+   where the arguments are:
+        reference.fa : the fasta file of reference sequence
+        mappable.bed : the file in BED format that includes regions that are
+                       mappable reads of lengths used in this run
+        alignments.bam : the alignments of the reads in BAM format 
+
+    Notes:
+    1. Optionally the user can specify the number of positions to sample by
+       specifying the -f option as an integer > 1.
+    2. A script convert_gem_to_bed with this distribution can be used to 
+       generate mappable.bed from the output of gem-mappability.
+"""
+
+from sys import argv, stderr, stdin, exit, stdout, path
+from getopt import getopt, GetoptError
+from time import time
+from collections import Counter
+from random import sample
+from bitarray import bitarray
+from multiprocessing import Pool
+from math import ceil
+
+import pysam as ps
+import numpy as np
+
+from utils import *
+
+__author__ = "Aakrosh Ratan"
+__email__  = "ratan@virginia.edu"
+
+# do we want the debug information to be printed?
+Debug_flag = False
+
+# number of threads to be used 
+Num_threads = 1
+
+# number of bases to be ignored from the edge of the fragments
+Shift = 0
+
+# fraction of positions to subsample
+Fraction = 0.1
+
+def summarize_counter(counter):
+    """Return the mean and std of the values in the Counter.
+    """
+    sum_of_numbers = sum(number*count for number,count in counter.items())
+    count = sum(count for n,count in counter.items())
+    mean = sum_of_numbers * 1.0 / count
+
+    total_squares = sum(number*number*count for number,count in counter.items())
+    mean_of_squares = total_squares / count
+    variance = mean_of_squares - mean * mean
+    std_dev = sqrt(variance)    
+    return mean,std_dev
+
+def calculate_inserts(filename):
+    """Analyze numrequired fragments to infer information about the insert
+sizes.
+    """
+    numrequired = 100000
+
+    bamfile = ps.AlignmentFile(filename, 'rb')
+    lengths = Counter()
+    numanalyzed = 0
+
+    for aln in bamfile:
+        if random() < 0.01:
+            if aln.is_duplicate or \
+               aln.is_qcfail or \
+               aln.is_secondary or \
+               aln.is_supplementary or \
+               aln.is_unmapped or \
+               aln.mate_is_unmapped: continue
+
+            if aln.is_proper_pair and aln.template_length > 0:
+                lengths[aln.template_length] += 1
+                numanalyzed += 1
+            if numanalyzed == numrequired: break
+
+    print >> stderr, "Sampled %d proper pairs to create a distribution"\
+          % numanalyzed
+    mean,std_dev = summarize_counter(lengths)
+    return int(mean),std_dev
+
+def calculate_coverage_stats(refname, bamname, chroms):
+    """Analyze numrequired positions to infer information about coverage
+    """
+    global Fraction
+
+    bf = ps.AlignmentFile(bamname, 'rb')
+    coverage = Counter()
+
+    chroms = []
+    with open("%s.fai" % refname, 'r') as f:
+        for line in f:
+            chrom,length,_,_,_ = line.strip().split("\t")
+            length = int(length)
+            if chroms and chrom not in chroms: continue
+
+            numrequired = Fraction if Fraction > 0 else Fraction * chromlength
+            numanalyzed = 0
+        
+            for pc in bf.pileup(chrom):
+                coverage[pc.n] += 1
+                if numanalyzed >= numrequired: break
+    bf.close()
+
+    mean,std_dev = summarize_counter(coverage)
+    return int(mean),std_dev
+
+def gen_reference_mq(refname, mapname, chroms):
+    """ Generate a map of mappable location.
+    """
+    mqmap = {}
+
+    # read in the length of the contigs, and assign memory for them
+    with open("%s.fai" % refname, 'r') as f:
+        for line in f:
+            chrom,length,_,_,_ = line.strip().split("\t")
+            length = int(length)
+            assert chrom not in mqmap
+            if chroms and chrom not in chroms: continue
+            mqmap[chrom] = bitarray([0]* length)
+
+    # read in the mappability information marking the mappable bases
+    with open(mapname, 'r') as f:
+        for line in f:
+            chrom,start,stop = line.strip().split("\t")
+            if chroms and chrom not in chroms: continue
+            chrom_map = mqmap[chrom]
+            chrom_map[int(start):int(stop)] = True
+
+    return mqmap
+
+def main(refname, mapname, bamname, min_num_pos, chroms):
+    global Num_threads, Fraction, Shift
+
+    # get the average insert length
+    av_insert,std_insert = calculate_inserts(bamname)
+    update("Mean and std of insert lengths: %d,%.2f" % (av_insert,std_insert))
+
+    # read the mappability information for the reference
+    mqmap = gen_reference_mq(refname, mapname, chroms)
+    update("Generated the mappability hash")
+ 
+    # calculate coverage cutoffs for locations I am going to consider
+    meancov,stdcov=calculate_coverage_stats(refname, bamname, chroms)
+    mincutoff = max(meancov - 3*stdcov, 0)
+    maxcutoff = meancov + 3*stdcov
+    update("Coverage cutoff: %d,%d" % (mincutoff,maxcutoff))
+
+    # calculate the sum of all chromosome lengths which will be needed in case
+    # of subsampling
+    dblen = 0
+    with open("%s.fai" % refname, 'r') as f:
+        for line in f:
+            chrom,length,_,_,_ = line.strip().split("\t")
+            if chroms and chrom not in chroms: continue
+            dblen += int(length)
+
+    rates = np.zeros(shape = (av_insert+1, 2), dtype = np.int) 
+    ff = ps.FastaFile(refname)
+    
+    with open("%s.fai" % refname, 'r') as f:
+        for line in f:
+            chrom,length,_,_,_ = line.strip().split("\t")
+            length = int(length)
+            if chroms and chrom not in chroms: continue
+            if chrom not in mqmap : continue
+            
+            chrommq = mqmap[chrom]
+            chromseq = ff.fetch(chrom) 
+           
+            num_select = None
+            if Fraction < 1.0:
+                num_select = int(length * Fraction) 
+            elif Fraction > 1.0:
+                num_select = int(length * Fraction / dblen)     
+   
+            inputs = []
+            partsize = int(ceil(length / Num_threads))
+            for i in xrange(0, length, partsize):
+                inputs.append((chrom,i,i+partsize,bamname,refname,chrommq,
+                               mincutoff,maxcutoff,av_insert,chromseq,
+                               num_select))
+            
+            pool = Pool(processes = Num_threads)
+            for _rates in pool.imap_unordered(process_region,inputs):
+                rates += _rates
+            pool.close()
+            pool.join()
+
+    # calculate the global rate
+    frags = 0
+    numpos = 0
+    for i in xrange(0, av_insert+1):
+        numpos += rates[i][0]
+        frags += rates[i][1]
+    meanrate = frags * 1.0 / numpos
+
+    for i in xrange(0, av_insert+1):
+        if rates[i][0] == 0: continue
+        if rates[i][0] < min_num_pos: continue
+
+        rate = rates[i][1]*1.0/rates[i][0]
+        if rate == 0.0: continue    
+        
+        print tabout(i,rates[i][0], rates[i][1],meanrate/rate)
+    print tabout(av_insert,"-","-","-")     
+  
+def process_region(args):
+    return _process_region(*args)
+
+def _process_region(chrom,start,end,bamname,refname,chrommq,mincutoff,
+                    maxcutoff, av_insert, chromseq, numselect):
+    global Shift
+
+    bf = ps.AlignmentFile(bamname, 'rb')
+    rates = np.zeros(shape = (av_insert+1, 2), dtype = np.int) 
+    
+    locs = None
+    if numselect != None:
+        locs = [x for x in sample(range(start,end),numselect) if chrommq[x]]
+        locs = set(locs)    
+
+    for pc in bf.pileup(chrom, start, end, truncate = True):
+        if locs == None and (not chrommq[pc.reference_pos]): continue
+        if locs != None and (pc.reference_pos not in locs): continue
+        if (pc.n > maxcutoff) or (pc.n < mincutoff): continue       
+
+        counter = Counter(chromseq[pc.reference_pos+Shift:pc.reference_pos+av_insert-Shift])
+        gc = counter['G'] + counter['C']
+
+        frags = len([pr for pr in pc.pileups if pr.is_head and pr.alignment.is_reverse == False])
+
+        rates[gc][0] += 1
+        rates[gc][1] += frags
+
+    bf.close()
+    return rates
+
+if __name__ == "__main__":
+    with open(path[0]+'/VERSION',"r") as version_file:
+        version = version_file.read().strip()
+
+    try:
+        opts, args = getopt(argv[1:], "hdt:s:m:f:c:v",
+                     ["help","debug","threads=","shift=","minpos=", 
+                      "fraction=", "chroms=", "version"])
+    except GetoptError, err:
+        print str(err)
+        print >> stderr, __doc__ % {'scriptVersion':version}
+        exit(2) 
+
+    min_num_pos = 1000
+    chroms = None
+    printversion = False
+
+    for o, a in opts:
+        if o in ("-h", "--help"):
+            print >> stderr, __doc__ % {'scriptVersion':version}
+            exit()
+        elif o in ("-d", "--debug"):
+            debug_flag = True
+        elif o in ("-t", "--threads"):
+            Num_threads = int(a)
+        elif o in ("-s", "--shift"):
+            Shift = int(a)
+        elif o in ("-m", "--minpos"):
+            min_num_pos = int(a)
+        elif o in ("-f" ,"--fraction"):
+            Fraction = float(a)
+        elif o in ("-c", "--chroms"):
+            chroms = a.split(",")
+            chroms = set(chroms)
+        elif o in ("-v", "--version"):
+            printversion = True
+        else:
+            assert False, "unhandled option"
+
+    if printversion:
+        print >> stderr, "Program: compute_gc_bias"
+        print >> stderr, "Version: %s" % version
+        print >> stderr, "Contact: Aakrosh Ratan (ratan@virginia.edu)"
+        exit(0)
+
+    if len(args) != 3:
+        print >> stderr, __doc__ % {'scriptVersion':version}
+        exit(3)
+
+    main(args[0], args[1], args[2], min_num_pos, chroms)

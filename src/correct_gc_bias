@@ -1,0 +1,286 @@
+#!/usr/bin/env python
+
+"""
+Correct and bin the read counts.
+Version: %(scriptVersion)s
+
+    usage:
+    correct_gc_bias [options] reference.fa reference.map rates.txt alignments.bam
+
+    where the options are:
+        -h,--help    : print usage and quit
+        -d,--debug   : print debug information
+        -t,--threads : use these many threads [1]
+        -b,--binsize : number of mappable bases in a bin [100]
+        -l,--loess   : run additional loess correction 
+        -v,--version : print version and exit
+    
+    where the arguments are:
+        reference.fa : the fasta file of reference sequence
+        mappable.bed : the file in BED format that includes regions that are
+                       mappable reads of lengths used in this run
+        rates.txt    : the output from compute_gc_bias
+        alignments.bam : the alignments of the reads in BAM format 
+
+    Notes:
+    1. The loess correction is run on the binned counts to remove any bias
+       that was not accounted for using the fragment model and could effect
+       the data at that resolution.
+"""
+
+from sys import argv, stderr, stdin, exit, stdout, path
+from getopt import getopt, GetoptError
+from itertools import izip
+from multiprocessing import Pool
+from collections import Counter
+
+import pysam as ps
+import numpy as np
+import statsmodels.api as sm
+
+from utils import * 
+
+__author__ = "Aakrosh Ratan"
+__email__  = "ratan@virginia.edu"
+
+# do we want the debug information to be printed?
+debug_flag = False
+
+# the size of the window
+Winlength = -1
+
+# the number of threads
+Num_threads = 1
+
+# the bin size
+Bin_size = 100
+
+class ZCounter(Counter):
+    def __add__(self, other):
+        '''Add counts from two counters without blowing up the zero value keys.
+        '''
+        if not isinstance(other, Counter):
+            return NotImplemented
+        result = ZCounter()
+        for elem in set(self) | set(other):
+            newcount = self[elem] + other[elem]
+            result[elem] = newcount
+        return result
+
+def read_gc_rates(filename, bamname):
+    rtmap = {}
+
+    with open(filename,'r') as f:
+        for line in f:
+            dist,_,_,scale = line.strip().split("\t")
+            if scale != "-":
+                rtmap[int(dist)] = float(scale)
+
+    maxdist = int(dist)
+
+    return rtmap,maxdist      
+
+def correct_region_gc(args):
+    return _correct_region_gc(*args)
+
+def _correct_region_gc(chrom, start, stop, mqmap, seq, bamname, rtmap):
+    global Winlength
+    
+    fgcmap = Counter()
+    fcounts = Counter(seq[start:start+Winlength])
+    fa = fcounts['A']          
+    fc = fcounts['C']
+    fg = fcounts['G'] 
+    ft = fcounts['T']
+    
+    rgcmap = Counter()
+    rcounts = Counter(seq[max(start-Winlength,0):start])
+    ra = rcounts['A']
+    rc = rcounts['C']
+    rg = rcounts['G']
+    rt = rcounts['T']
+
+    for i in xrange(start,stop):
+        if mqmap[i] == True and (fa+fc+fg+ft) > 0:
+            fgcmap[i] = fg + fc
+        fcounts[seq[i]] -= 1
+        try:
+            fcounts[seq[i+Winlength]] += 1
+        except IndexError:
+            pass
+
+        if mqmap[i] == True and (ra+rc+rg+rt) > 0:
+            rgcmap[i] = rg + rc
+        rcounts[seq[i]] += 1
+        if i >= Winlength:
+            rcounts[seq[i-Winlength]] -= 1
+
+        fa = fcounts['A']
+        fc = fcounts['C']
+        fg = fcounts['G']
+        ft = fcounts['T']
+
+        ra = rcounts['A']
+        rc = rcounts['C']
+        rg = rcounts['G']
+        rt = rcounts['T']
+
+    original = ZCounter()
+    corrected = ZCounter()
+
+    for i in xrange(start,stop):
+        if mqmap[i] == True and fgcmap[i] in rtmap and rgcmap[i] in rtmap: 
+            original[i] = 0
+            corrected[i] = 0
+
+    bamfile = ps.AlignmentFile(bamname, 'rb')
+    for pc in bamfile.pileup(chrom,start,stop,truncate=True,stepper="all"):
+        if mqmap[pc.reference_pos] ==False:continue
+
+        fgc = fgcmap[pc.reference_pos]
+        rgc = rgcmap[pc.reference_pos]
+        if (fgc not in rtmap) or (rgc not in rtmap): continue
+
+        fposcount = len([pr for pr in pc.pileups if pr.is_head and pr.alignment.is_reverse == False])
+        original[pc.reference_pos] += fposcount
+        corrected[pc.reference_pos] += fposcount * rtmap[fgc]
+
+        rposcount = len([pr for pr in pc.pileups if pr.is_tail and pr.alignment.is_reverse])
+        original[pc.reference_pos] += rposcount
+        corrected[pc.reference_pos] += rposcount * rtmap[rgc]
+
+    bamfile.close()
+    return original,corrected
+
+def main(refname, mapname, ratename, bamname, loess):
+    global Winlength, Num_threads, Bin_size
+
+    # read the rates for the various GC values
+    rtmap,maxdist = read_gc_rates(ratename, bamname)
+    update("Read the fragment rates.")
+    Winlength = maxdist
+
+    # read the chromosome and process it
+    ff = ps.FastaFile(refname)
+
+    for chrom,chromlength in izip(ff.references,ff.lengths):
+        # read the mapping information about this chromosome
+        mqmap = read_mq_map(mapname, chrom, chromlength)
+        update("Read mappability information for chromosome %s" % chrom)
+    
+        # read the sequence for this chromosome
+        seq = ff.fetch(chrom)
+        update("Read the sequence for chromosome %s" % chrom)
+
+        # partition the chromosome into buckets and for each position 
+        # 1. calculate the GC content
+        # 2. calculate the fragment count   
+        # 3. correct the count based on the information of rates
+        inputs = []
+        partsize = int(ceil(chromlength * 1.0 / Num_threads))
+        for i in xrange(0, chromlength, partsize):
+            inputs.append((chrom, i, i+partsize, mqmap, seq, bamname, rtmap))
+        
+        chrom_counts = ZCounter()
+        corrected_counts = ZCounter()
+        
+        pool = Pool(processes = Num_threads)    
+        for original,corrected in pool.imap_unordered(correct_region_gc,inputs):
+            chrom_counts += original
+            corrected_counts += corrected
+        pool.close()
+        pool.join()
+
+        # bin the corrected counts
+        index = 0
+        count = 0
+        modcount = 0
+        gc = 0
+
+        seq = ff.fetch(chrom).upper()
+        bins = []
+        start = None
+
+        for pos in xrange(0, chromlength):
+            if pos in chrom_counts:
+                if start == None: start = pos
+
+                index += 1
+                count += chrom_counts[pos]
+                modcount += corrected_counts[pos]
+                end = pos
+                gc += 1 if seq[pos] in ["G","C"] else 0
+
+                if index == Bin_size:
+                    bins.append((start,end+1,gc,count,modcount))
+                    index = 0
+                    count = 0
+                    modcount = 0
+                    gc = 0
+                    start = end + 1
+        if index != 0:
+            bins.append((start,chromlength,gc,count,modcount))
+        update("Corrected counts are done for %s" % chrom)
+         
+        # final corrections using loess
+        if loess:
+            meancov = {}
+            coverage = [c for _,_,_,_,c in bins]
+            gccontent = [g for _,_,g,_,_ in bins]
+            smoothed = sm.nonparametric.lowess(coverage, gccontent)
+            for x,y in smoothed:
+                meancov[x] = y
+            meanofcoverages = np.median(coverage)
+
+        for start,end,gc,count,modcount in bins:
+            if loess:
+                modcount = meanofcoverages * modcount / meancov[gc]
+            print tabout(chrom,start,end,gc,count,modcount)
+
+    ff.close()
+
+if __name__ == "__main__":
+    with open(path[0]+'/VERSION',"r") as version_file:
+        version = version_file.read().strip()
+
+    try:
+        opts, args = getopt(argv[1:], "hdt:b:lv",
+                     ["help", "debug", "threads=", "binsize=", "loess",
+                      "version"])
+    except GetoptError, err:
+        print str(err)
+        print >> stderr, __doc__ % {'scriptVersion' : version}
+        exit(2) 
+
+    loess = False
+    printversion = False
+
+    for o, a in opts:
+        if o in ("-h", "--help"):
+            print >> stderr, __doc__ % {'scriptVersion' : version}
+            exit()
+        elif o in ("-d", "--debug"):
+            debug_flag = True
+        elif o in ("-t", "--threads"):
+            Num_threads = int(a)
+        elif o in ("-b", "--binsize"):
+            Bin_size = int(a)
+        elif o in ("-l", "--loess"):
+            loess = True
+        elif o in ("-v", "--version"):
+            printversion = True
+        else:
+            assert False, "unhandled option"
+
+    if printversion:
+        print >> stderr, "Program: correct_gc_bias"
+        print >> stderr, "Version: %s" % version
+        print >> stderr, "Contact: Aakrosh Ratan (ratan@virginia.edu)"
+        exit(0)
+
+
+    if len(args) != 4:
+        print >> stderr, __doc__ % {'scriptVersion' : version}
+        exit(3)
+
+    main(args[0], args[1], args[2], args[3], loess)

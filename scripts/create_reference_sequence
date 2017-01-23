@@ -1,0 +1,60 @@
+#!/usr/bin/env python
+
+"""
+    usage:
+      create_reference_sequence [options] length 
+
+    where the options are:
+        -h,--help : print usage and quit
+        -d,--debug: print debug information
+        -g,--gc   : median GC content should be this [.50]
+"""
+
+from sys import argv, stderr, stdin, exit, stdout
+from getopt import getopt, GetoptError
+from random import shuffle
+
+__author__ = "Aakrosh Ratan"
+__email__  = "ratan@virginia.edu"
+
+# do we want the debug information to be printed?
+debug_flag = False
+
+def main(length, expgc):
+    print ">reference"
+    numgc = int(length * expgc)
+    numat = (length - numgc)
+    gc = numgc * 'GC'
+    at = numat * 'AT'
+    sequence = gc + at
+    lsequence = list(sequence)
+    shuffle(lsequence)
+    for i in xrange(0,length,60):
+        print "".join(lsequence[i:i+60])
+
+if __name__ == "__main__":
+    try:
+        opts, args = getopt(argv[1:], "hdg:",["help", "debug", "gc="])
+    except GetoptError, err:
+        print str(err)
+        print >> stderr, __doc__
+        exit(2) 
+
+    expgc = 0.50
+
+    for o, a in opts:
+        if o in ("-h", "--help"):
+            print >> stderr, __doc__
+            exit()
+        elif o in ("-d", "--debug"):
+            debug_flag = True
+        elif o in ("-g", "--gc"):
+            expgc = float(a)
+        else:
+            assert False, "unhandled option"
+
+    if len(args) != 1:
+        print >> stderr, __doc__
+        exit(3)
+
+    main(int(args[0]), expgc)
