@@ -141,11 +141,11 @@ def _correct_region_gc(chrom, start, stop, mqmap, seq, bamname, rtmap):
         rgc = rgcmap[pc.reference_pos]
         if (fgc not in rtmap) or (rgc not in rtmap): continue
 
-        fposcount = len([pr for pr in pc.pileups if pr.is_head and pr.alignment.is_reverse == False])
+        fposcount = len([pr for pr in pc.pileups if pr.is_head and pr.alignment.is_reverse == False and pr.alignment.mapping_quality > 0])
         original[pc.reference_pos] += fposcount
         corrected[pc.reference_pos] += fposcount * rtmap[fgc]
 
-        rposcount = len([pr for pr in pc.pileups if pr.is_tail and pr.alignment.is_reverse])
+        rposcount = len([pr for pr in pc.pileups if pr.is_tail and pr.alignment.is_reverse and pr.alignment.mapping_quality > 0])
         original[pc.reference_pos] += rposcount
         corrected[pc.reference_pos] += rposcount * rtmap[rgc]
 
