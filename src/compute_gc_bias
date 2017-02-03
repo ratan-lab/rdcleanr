@@ -19,6 +19,9 @@ Version: %(scriptVersion)s
         -c,--chroms   : use this comma-separated list of chromosome in 
                         calculating the rates only [all]
         -v,--version  : print version and exit
+        -q,--quality  : do not consider locations where the mean MQ is less
+                        than this threshold [30]
+
 
    where the arguments are:
         reference.fa : the fasta file of reference sequence
@@ -154,7 +157,7 @@ def gen_reference_mq(refname, mapname, chroms):
 
     return mqmap
 
-def main(refname, mapname, bamname, min_num_pos, chroms):
+def main(refname, mapname, bamname, min_num_pos, chroms, minq):
     global Num_threads, Fraction, Shift
 
     # get the average insert length
@@ -204,7 +207,7 @@ def main(refname, mapname, bamname, min_num_pos, chroms):
             for i in xrange(0, length, partsize):
                 inputs.append((chrom,i,i+partsize,bamname,refname,chrommq,
                                mincutoff,maxcutoff,av_insert,chromseq,
-                               num_select))
+                               num_select, minq))
             
             pool = Pool(processes = Num_threads)
             for _rates in pool.imap_unordered(process_region,inputs):
@@ -228,13 +231,13 @@ def main(refname, mapname, bamname, min_num_pos, chroms):
         if rate == 0.0: continue    
         
         print tabout(i,rates[i][0], rates[i][1],meanrate/rate)
-    print tabout(av_insert,"-","-","-")     
+    print tabout(av_insert,minq,"-","-")     
   
 def process_region(args):
     return _process_region(*args)
 
 def _process_region(chrom,start,end,bamname,refname,chrommq,mincutoff,
-                    maxcutoff, av_insert, chromseq, numselect):
+                    maxcutoff, av_insert, chromseq, numselect, minq):
     global Shift
 
     bf = ps.AlignmentFile(bamname, 'rb')
@@ -250,10 +253,16 @@ def _process_region(chrom,start,end,bamname,refname,chrommq,mincutoff,
         if locs != None and (pc.reference_pos not in locs): continue
         if (pc.n > maxcutoff) or (pc.n < mincutoff): continue       
 
+        frags = 0
+        mqsum = 0
+        for pr in pc.pileups:
+            if pr.is_head and pr.alignment.is_reverse == False:
+                frags += 1 
+                mqsum += pr.alignment.mapping_quality
+        if frags != 0 and (mqsum*1.0/frags) < minq: continue
+
         counter = Counter(chromseq[pc.reference_pos+Shift:pc.reference_pos+av_insert-Shift])
         gc = counter['G'] + counter['C']
-
-        frags = len([pr for pr in pc.pileups if pr.is_head and pr.alignment.is_reverse == False])
 
         rates[gc][0] += 1
         rates[gc][1] += frags
@@ -266,9 +275,9 @@ if __name__ == "__main__":
         version = version_file.read().strip()
 
     try:
-        opts, args = getopt(argv[1:], "hdt:s:m:f:c:v",
+        opts, args = getopt(argv[1:], "hdt:s:m:f:c:vq:",
                      ["help","debug","threads=","shift=","minpos=", 
-                      "fraction=", "chroms=", "version"])
+                      "fraction=", "chroms=", "version", "quality="])
     except GetoptError, err:
         print str(err)
         print >> stderr, __doc__ % {'scriptVersion':version}
@@ -277,6 +286,7 @@ if __name__ == "__main__":
     min_num_pos = 1000
     chroms = None
     printversion = False
+    min_quality = 30
 
     for o, a in opts:
         if o in ("-h", "--help"):
@@ -297,6 +307,8 @@ if __name__ == "__main__":
             chroms = set(chroms)
         elif o in ("-v", "--version"):
             printversion = True
+        elif o in ("-q", "--quality"):  
+            min_quality = int(a)
         else:
             assert False, "unhandled option"
 
@@ -310,4 +322,4 @@ if __name__ == "__main__":
         print >> stderr, __doc__ % {'scriptVersion':version}
         exit(3)
 
-    main(args[0], args[1], args[2], min_num_pos, chroms)
+    main(args[0], args[1], args[2], min_num_pos, chroms, min_quality)
