@@ -185,7 +185,7 @@ def main(refname, mapname, bamname, min_num_pos, chroms, minq):
 
     rates = np.zeros(shape = (av_insert+1, 2), dtype = np.int) 
     ff = ps.FastaFile(refname)
-    
+ 
     with open("%s.fai" % refname, 'r') as f:
         for line in f:
             chrom,length,_,_,_ = line.strip().split("\t")
@@ -223,6 +223,39 @@ def main(refname, mapname, bamname, min_num_pos, chroms, minq):
         frags += rates[i][1]
     meanrate = frags * 1.0 / numpos
 
+    # are there any GC values for which we are unable to calculate rates?
+    left = []
+    for i in xrange(0, av_insert+1):
+        if rates[i][0] == 0 or rates[i][0] < min_num_pos:
+            rates[i][0] = 0
+            rates[i][1] = 0
+            left.append(i)
+    left = set(left)
+
+    # final attempt to calculate the remaining rates
+    with open("%s.fai" % refname, 'r') as f:
+        for line in f:
+            chrom,length,_,_,_ = line.strip().split("\t")
+            length = int(length)
+            if chroms and chrom not in chroms: continue
+            if chrom not in mqmap : continue
+            
+            chrommq = mqmap[chrom]
+            chromseq = ff.fetch(chrom) 
+           
+            inputs = []
+            partsize = int(ceil(length / Num_threads))
+            for i in xrange(0, length, partsize):
+                inputs.append((chrom,i,i+partsize,bamname,refname,chrommq,
+                               mincutoff,maxcutoff,av_insert,chromseq,
+                               partsize, minq, left))
+            
+            pool = Pool(processes = Num_threads)
+            for _rates in pool.imap_unordered(process_region,inputs):
+                rates += _rates
+            pool.close()
+            pool.join()
+
     for i in xrange(0, av_insert+1):
         if rates[i][0] == 0: continue
         if rates[i][0] < min_num_pos: continue
@@ -237,7 +270,7 @@ def process_region(args):
     return _process_region(*args)
 
 def _process_region(chrom,start,end,bamname,refname,chrommq,mincutoff,
-                    maxcutoff, av_insert, chromseq, numselect, minq):
+                    maxcutoff, av_insert, chromseq, numselect, minq, left=None):
     global Shift
 
     bf = ps.AlignmentFile(bamname, 'rb')
@@ -263,6 +296,7 @@ def _process_region(chrom,start,end,bamname,refname,chrommq,mincutoff,
 
         counter = Counter(chromseq[pc.reference_pos+Shift:pc.reference_pos+av_insert-Shift])
         gc = counter['G'] + counter['C']
+        if left and gc not in left: continue
 
         rates[gc][0] += 1
         rates[gc][1] += frags
