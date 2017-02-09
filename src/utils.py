@@ -3,7 +3,9 @@ from time import time
 from math import sqrt, ceil
 from bitarray import bitarray
 from random import random
+from tempfile import mkdtemp
 
+import os
 import pysam as ps
 
 start_time = time()
@@ -32,3 +34,16 @@ def read_mq_map(mapname, chromosome, length):
                 mqmap[int(start):int(stop)] = True
 
     return mqmap
+
+def CreateTempDir():
+    """Use tempfile.mkdtemp to create a temporary directory
+    """
+    name = mkdtemp()
+    return name    
+
+def RemoveDir(path):
+    try:
+        os.rmdir(path)
+    except OSError:
+        print >> stderr, "%s does not exist. Could not remove."
+        exit(1)
