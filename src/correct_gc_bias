@@ -5,7 +5,7 @@ Correct and bin the read counts.
 Version: %(scriptVersion)s
 
     usage:
-    correct_gc_bias [options] reference.fa reference.map rates.txt alignments.bam
+    correct_gc_bias [options] output.txt reference.fa reference.map rates.txt alignments.bam
 
     where the options are:
         -h,--help    : print usage and quit
@@ -16,6 +16,7 @@ Version: %(scriptVersion)s
         -v,--version : print version and exit
     
     where the arguments are:
+        output.txt   : the output file
         reference.fa : the fasta file of reference sequence
         mappable.bed : the file in BED format that includes regions that are
                        mappable reads of lengths used in this run
@@ -33,7 +34,10 @@ from getopt import getopt, GetoptError
 from itertools import izip
 from multiprocessing import Pool
 from collections import Counter
+from tempfile import NamedTemporaryFile
 
+import shutil as sh
+import signal as sg
 import pysam as ps
 import numpy as np
 import statsmodels.api as sm
@@ -55,17 +59,8 @@ Num_threads = 1
 # the bin size
 Bin_size = 100
 
-class ZCounter(Counter):
-    def __add__(self, other):
-        '''Add counts from two counters without blowing up the zero value keys.
-        '''
-        if not isinstance(other, Counter):
-            return NotImplemented
-        result = ZCounter()
-        for elem in set(self) | set(other):
-            newcount = self[elem] + other[elem]
-            result[elem] = newcount
-        return result
+Mqmap = {}
+Seqmap = {}
 
 def read_gc_rates(filename, bamname):
     rtmap = {}
@@ -83,9 +78,12 @@ def read_gc_rates(filename, bamname):
 def correct_region_gc(args):
     return _correct_region_gc(*args)
 
-def _correct_region_gc(chrom, start, stop, mqmap, seq, bamname, rtmap):
-    global Winlength
+def _correct_region_gc(chrom, start, stop, bamname, rtmap):
+    global Winlength, Seqmap, Mqmap
     
+    mqmap = Mqmap[chrom]
+    seq = Seqmap[chrom]
+
     fgcmap = Counter()
     fcounts = Counter(seq[start:start+Winlength])
     fa = fcounts['A']          
@@ -125,34 +123,79 @@ def _correct_region_gc(chrom, start, stop, mqmap, seq, bamname, rtmap):
         rg = rcounts['G']
         rt = rcounts['T']
 
-    original = ZCounter()
-    corrected = ZCounter()
+    original = np.zeros(stop-start, np.int)
+    corrected = np.zeros(stop-start, np.float)
 
     for i in xrange(start,stop):
-        if mqmap[i] == True and fgcmap[i] in rtmap and rgcmap[i] in rtmap: 
-            original[i] = 0
-            corrected[i] = 0
+        if mqmap[i] == True and fgcmap[i] in rtmap and rgcmap[i] in rtmap:
+            pass
+        else:
+            j = i-start
+            original[j] = -1
+            corrected[j] = -1
 
     bamfile = ps.AlignmentFile(bamname, 'rb')
-    for pc in bamfile.pileup(chrom,start,stop,truncate=True,stepper="all"):
-        if mqmap[pc.reference_pos] ==False:continue
-
-        fgc = fgcmap[pc.reference_pos]
-        rgc = rgcmap[pc.reference_pos]
-        if (fgc not in rtmap) or (rgc not in rtmap): continue
-
-        fposcount = len([pr for pr in pc.pileups if pr.is_head and pr.alignment.is_reverse == False and pr.alignment.mapping_quality > 0])
-        original[pc.reference_pos] += fposcount
-        corrected[pc.reference_pos] += fposcount * rtmap[fgc]
-
-        rposcount = len([pr for pr in pc.pileups if pr.is_tail and pr.alignment.is_reverse and pr.alignment.mapping_quality > 0])
-        original[pc.reference_pos] += rposcount
-        corrected[pc.reference_pos] += rposcount * rtmap[rgc]
+    for aln in bamfile.fetch(chrom,start,stop):
+        if aln.is_unmapped or aln.is_secondary or aln.is_supplementary or \
+           aln.is_qcfail or aln.is_duplicate: continue
+        if aln.mapping_quality == 0: continue
+    
+        if aln.is_reverse:
+            if aln.aend < start or aln.aend >= stop: continue
+            if mqmap[aln.aend] == False: continue
+            fgc = fgcmap[aln.aend]
+            rgc = rgcmap[aln.aend]
+            if (fgc not in rtmap) or (rgc not in rtmap): continue
+            original[aln.aend-start] += 1
+            corrected[aln.aend-start] += rtmap[rgc]
+        else:
+            if aln.pos < start or aln.pos >= stop: continue
+            if mqmap[aln.pos] == False: continue
+            fgc = fgcmap[aln.pos]
+            rgc = rgcmap[aln.pos]
+            if (fgc not in rtmap) or (rgc not in rtmap): continue
+            original[aln.pos-start] += 1
+            corrected[aln.pos-start] += rtmap[fgc]
 
     bamfile.close()
-    return original,corrected
+    return chrom,start,original,corrected
 
-def main(refname, mapname, ratename, bamname, loess):
+def gen_reference_mq(refname, mapname, chroms=None):
+    """ Generate a map of mappable location.
+    """
+    global Mqmap
+
+    # read in the length of the contigs, and assign memory for them
+    with open("%s.fai" % refname, 'r') as f:
+        for line in f:
+            chrom,length,_,_,_ = line.strip().split("\t")
+            length = int(length)
+            assert chrom not in Mqmap
+            if chroms and chrom not in chroms: continue
+            Mqmap[chrom] = bitarray([0]* length)
+
+    # read in the mappability information marking the mappable bases
+    with open(mapname, 'r') as f:
+        for line in f:
+            chrom,start,stop = line.strip().split("\t")
+            if chroms and chrom not in chroms: continue
+            chrom_map = Mqmap[chrom]
+            chrom_map[int(start):int(stop)] = True
+
+def gen_reference_seq(refname, chroms=None):
+    global Seqmap
+    ff = ps.FastaFile(refname)
+
+    # read in the length of the contigs, and assign memory for them
+    with open("%s.fai" % refname, 'r') as f:
+        for line in f:
+            chrom,_,_,_,_ = line.strip().split("\t")
+            if chroms and chrom not in chroms: continue
+            Seqmap[chrom] = ff.fetch(chrom).upper()
+
+    ff.close()
+
+def main(outname, refname, mapname, ratename, bamname, loess):
     global Winlength, Num_threads, Bin_size
 
     # read the rates for the various GC values
@@ -160,84 +203,102 @@ def main(refname, mapname, ratename, bamname, loess):
     update("Read the fragment rates.")
     Winlength = maxdist
 
-    # read the chromosome and process it
-    ff = ps.FastaFile(refname)
+    # read the mappability information for the reference
+    gen_reference_mq(refname, mapname)
+    update("Generated the mappability hash")
+ 
+    # read the sequence from the reference
+    gen_reference_seq(refname)
+    update("Generated the sequence hash")
 
-    for chrom,chromlength in izip(ff.references,ff.lengths):
-        # read the mapping information about this chromosome
-        mqmap = read_mq_map(mapname, chrom, chromlength)
-        update("Read mappability information for chromosome %s" % chrom)
-    
-        # read the sequence for this chromosome
-        seq = ff.fetch(chrom)
-        update("Read the sequence for chromosome %s" % chrom)
+    inputs = []
+    rawcounts = {}
+    corrcounts = {}
 
-        # partition the chromosome into buckets and for each position 
-        # 1. calculate the GC content
-        # 2. calculate the fragment count   
-        # 3. correct the count based on the information of rates
-        inputs = []
-        partsize = int(ceil(chromlength * 1.0 / Num_threads))
-        for i in xrange(0, chromlength, partsize):
-            inputs.append((chrom, i, i+partsize, mqmap, seq, bamname, rtmap))
-        
-        chrom_counts = ZCounter()
-        corrected_counts = ZCounter()
-        
-        pool = Pool(processes = Num_threads)    
-        for original,corrected in pool.imap_unordered(correct_region_gc,inputs):
-            chrom_counts += original
-            corrected_counts += corrected
+    with open("%s.fai" % refname, 'r') as f:
+        for line in f:
+            chrom,length,_,_,_ = line.strip().split("\t")
+            length = int(length)
+            if chrom not in Mqmap : continue
+
+            rawcounts[chrom] = np.zeros(length, np.int)
+            corrcounts[chrom] = np.zeros(length, np.float) 
+
+            partsize = int(ceil(length * 1.0 / Num_threads))
+            for i in xrange(0, length, partsize):
+                inputs.append((chrom,i,min(i+partsize,length),bamname,rtmap))
+
+    original_sigint_handler = sg.signal(sg.SIGINT, sg.SIG_IGN) 
+    pool = Pool(processes = Num_threads)
+    sg.signal(sg.SIGINT, original_sigint_handler)
+    update("Pools ready")
+
+    try:
+        for chrm,stt,_raw,_corr in pool.imap_unordered(correct_region_gc,inputs):
+            rawcounts[chrm][stt:(stt+len(_raw))] += _raw
+            corrcounts[chrm][stt:(stt+len(_corr))] += _corr
+    except KeyboardInterrupt:
+        pool.terminate()
+    else:
         pool.close()
-        pool.join()
+    pool.join()
+    update("Pools done")
 
-        # bin the corrected counts
-        index = 0
-        count = 0
-        modcount = 0
-        gc = 0
+    # bin the corrected counts
+    with open("%s.fai" % refname, 'r') as f, open(outname, 'w') as g:
+        for line in f:
+            chrom,length,_,_,_ = line.strip().split("\t")
+            length = int(length)
+            if chrom not in Mqmap : continue
 
-        seq = ff.fetch(chrom).upper()
-        bins = []
-        start = None
+            seqmap = Seqmap[chrom]
+            indx = 0
+            gc = 0
+            rc = 0
+            cc = 0
+            start = None
 
-        for pos in xrange(0, chromlength):
-            if pos in chrom_counts:
-                if start == None: start = pos
+            for i,(r,c) in enumerate(izip(rawcounts[chrom], corrcounts[chrom])):
+                if r == -1: continue
+                if start == None: start = i                  
 
-                index += 1
-                count += chrom_counts[pos]
-                modcount += corrected_counts[pos]
-                end = pos
-                gc += 1 if seq[pos] in ["G","C"] else 0
+                indx += 1
+                rc += r
+                cc += c
+                end = i
+                gc += 1 if seqmap[i] in ["G","C"] else 0
 
-                if index == Bin_size:
-                    bins.append((start,end+1,gc,count,modcount))
-                    index = 0
-                    count = 0
-                    modcount = 0
+                if indx == Bin_size:
+                    print >> g, tabout(chrom,start,end+1,gc,rc,cc)
+                    indx = 0
                     gc = 0
+                    rc = 0
+                    cc = 0
                     start = end + 1
-        if index != 0:
-            bins.append((start,chromlength,gc,count,modcount))
-        update("Corrected counts are done for %s" % chrom)
-         
-        # final corrections using loess
-        if loess:
-            meancov = {}
-            coverage = [c for _,_,_,_,c in bins]
-            gccontent = [g for _,_,g,_,_ in bins]
-            smoothed = sm.nonparametric.lowess(coverage, gccontent)
-            for x,y in smoothed:
-                meancov[x] = y
-            meanofcoverages = np.median(coverage)
 
-        for start,end,gc,count,modcount in bins:
-            if loess:
-                modcount = meanofcoverages * modcount / meancov[gc]
-            print tabout(chrom,start,end,gc,count,modcount)
+            if indx != 0:
+                print >> g, tabout(chrom,start,length,gc,rc,cc)
+    update("Binning done")             
+      
+    if loess:
+        meancov = {}
+        tmparray = np.genfromtxt(outname, usecols = (3,5)) 
+        coverage = tmparray[:,1]
+        gccontent = tmparray[:,0]
+        smoothed = sm.nonparametric.lowess(coverage, gccontent)
+        for x,y in smoothed:
+            meancov[int(x)] = y
+        meanofcoverages = np.median(coverage)
 
-    ff.close()
+        with NamedTemporaryFile(delete=False) as outfile:
+            with open(outname) as infile:
+                for line in infile:
+                    chrom,start,end,gc,rcount,ccount = line.strip().split()
+                    ccount = meanofcoverages * float(ccount) / meancov[int(gc)]
+                    print >> outfile, tabout(chrom,start,end,gc,rcount,ccount)
+
+        sh.move(outfile.name, outname)
+    update("Corrections done")
 
 if __name__ == "__main__":
     with open(path[0]+'/VERSION',"r") as version_file:
@@ -279,8 +340,8 @@ if __name__ == "__main__":
         exit(0)
 
 
-    if len(args) != 4:
+    if len(args) != 5:
         print >> stderr, __doc__ % {'scriptVersion' : version}
         exit(3)
 
-    main(args[0], args[1], args[2], args[3], loess)
+    main(args[0], args[1], args[2], args[3], args[4], loess)
