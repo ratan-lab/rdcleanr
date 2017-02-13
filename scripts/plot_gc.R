@@ -64,7 +64,7 @@ multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
   }
 }
 
-cmd = paste("cat",args[1],"|cut -f 4,5,6", sep = " ")
+cmd = paste("cat",args[1],"|cut -f 4,5,6 | shuf -n 200000", sep = " ")
 data = read.table(pipe(cmd))
 names(data) = c("gc", "raw", "corrected")
 
