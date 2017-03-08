@@ -43,12 +43,14 @@ from collections import Counter
 from random import sample, randint
 from bitarray import bitarray
 from multiprocessing import Pool
-from math import ceil
+from math import ceil, sqrt
 from array import array
 
 import signal as sg
 import pysam as ps
 import numpy as np
+
+from scipy import interpolate
 
 from utils import *
 
@@ -273,54 +275,36 @@ def main(refname, mapname, bamname, min_num_pos, chroms, minq):
         numpos += rates[i][0]
         frags += rates[i][1]
     meanrate = frags * 1.0 / numpos
-
-    # are there any GC values for which we are unable to calculate rates?
-    left = []
-    for i in xrange(0, av_insert+1):
-        if rates[i][0] == 0 or rates[i][0] < min_num_pos:
-            rates[i][0] = 0
-            rates[i][1] = 0
-            left.append(i)
-    update("Another attempt to calculate rates at %d GC values" % len(left))
-    left = set(left)
-    inputs = []
-
-    # final attempt to calculate the remaining rates
-    with open("%s.fai" % refname, 'r') as f:
-        for line in f:
-            chrom,length,_,_,_ = line.strip().split("\t")
-            length = int(length)
-            if chroms and chrom not in chroms: continue
-            if chrom not in Mqmap : continue
-            
-            partsize = int(ceil(length / Num_threads))
-            for i in xrange(0, length, partsize):
-                inputs.append((chrom,i,min(i+partsize,length), bamname, 
-                               mincutoff,maxcutoff,av_insert,minq,left))
-
-    original_sigint_handler = sg.signal(sg.SIGINT, sg.SIG_IGN) 
-    pool = Pool(processes = Num_threads)
-    sg.signal(sg.SIGINT, original_sigint_handler)
-
-    try:
-        for _rates in pool.imap_unordered(process_region_left,inputs):
-            rates += _rates
-    except KeyboardInterrupt:
-        pool.terminate()
-    else:
-        pool.close()
-    pool.join()
     update("Calculated the fragment rates")
 
-    for i in xrange(0, av_insert+1):
-        if rates[i][0] == 0: continue
-        if rates[i][0] < min_num_pos: continue
 
-        rate = rates[i][1]*1.0/rates[i][0]
-        if rate == 0.0: continue    
+    gc = []
+    orate = []
+    for i in xrange(0, av_insert+1):
+        if rates[i][0] < min_num_pos: continue
+        if rates[i][1] == 0: continue
         
-        print tabout(i,rates[i][0], rates[i][1],meanrate/rate)
-    print tabout(av_insert,minq,"-","-")     
+        gc.append(i)
+        orate.append(meanrate*rates[i][0]/rates[i][1])
+
+    # lets try to predict the rates for the GC values where we could not
+    # calculate the rates. We do this by a one-dimensional smoothing spline fit
+    # to the known rates
+    std = np.std(orate)
+    m = len(orate)
+    mins = (m - sqrt(2*m)) * pow(std,2)
+    #print >> stderr, (m - sqrt(2*m)) * pow(std,2), (m + sqrt(2*m)) * pow(std,2)
+    
+    f = interpolate.UnivariateSpline(gc, orate, s = mins, ext = 0)
+    
+    for i in xrange(0, av_insert+1):
+        numpos,numfrags = rates[i]
+        if numfrags == 0:
+            orate = None
+        else:
+            orate = meanrate*numpos/numfrags
+        mrate = f(i)
+        print tabout(i,numpos,numfrags,orate,mrate)
   
 def process_region(args):
     return _process_region(*args)

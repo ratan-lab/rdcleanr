@@ -67,7 +67,7 @@ def read_gc_rates(filename, bamname):
 
     with open(filename,'r') as f:
         for line in f:
-            dist,_,_,scale = line.strip().split("\t")
+            dist,_,_,_,scale = line.strip().split("\t")
             if scale != "-":
                 rtmap[int(dist)] = float(scale)
 

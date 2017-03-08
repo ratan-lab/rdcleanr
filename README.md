@@ -1,6 +1,16 @@
 # rdcleanr
 Implementation of a single position models to remove bias in NGS
 
+### Installation
+Type
+
+```bash
+make
+```
+
+to copy the binaries to a "bin" directory in the distribution. Ancilliary
+scripts can be found in the "scripts" folder of the distribution.
+
 ### Implementation
 Substantial biases plague sequences generated using massively parallel sequencing technologies, and effect downstream processing and interpretation of such data. Currently, this tool is designed to handle bias introduced due to varying GC content in the genome, but in the future we will incorporate other sources that effect short-read sequencing. The current method to deal with GC bias is similar to that described in Benjamini and Speed, 2012. In that article the authors showed that GC-bias is run-specific, and base composition around the two fragment break points correlates with it.    
 

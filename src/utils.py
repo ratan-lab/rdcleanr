@@ -13,7 +13,7 @@ start_time = time()
 def tabout(*args):
     """Return a tab-delimited string from the list
     """
-    output = [str(x) for x in args if x != None]
+    output = ['NA' if x is None else str(x) for x in args]
     return "\t".join(output)
 
 def update(message):
