@@ -21,7 +21,7 @@ Version: %(scriptVersion)s
         -v,--version  : print version and exit
         -q,--quality  : do not consider locations where the mean MQ is less
                         than this threshold [30]
-
+        -a,--avgcov   : average coverage to expect in the BAM file [auto]
 
    where the arguments are:
         reference.fa : the fasta file of reference sequence
@@ -34,6 +34,7 @@ Version: %(scriptVersion)s
        specifying the -f option as an integer > 1.
     2. A script convert_gem_to_bed with this distribution can be used to 
        generate mappable.bed from the output of gem-mappability.
+    3. The average coverage is calculated if it is not specified by the user. 
 """
 
 from sys import argv, stderr, stdin, exit, stdout, path
@@ -43,7 +44,7 @@ from collections import Counter
 from random import sample, randint
 from bitarray import bitarray
 from multiprocessing import Pool
-from math import ceil, sqrt
+from math import ceil, sqrt, exp
 from array import array
 
 import signal as sg
@@ -81,7 +82,7 @@ def summarize_counter(counter):
     mean = sum_of_numbers * 1.0 / count
 
     total_squares = sum(number*number*count for number,count in counter.items())
-    mean_of_squares = total_squares / count
+    mean_of_squares = total_squares * 1.0 / count
     variance = mean_of_squares - mean * mean
     std_dev = sqrt(variance)    
     return mean,std_dev
@@ -118,19 +119,18 @@ sizes.
 def calculate_coverage_stats(refname, bamname, chroms):
     """Analyze numrequired positions to infer information about coverage
     """
+    global Fraction, Num_threads
+    
     coverage = Counter()
-
-    global Num_threads
     inputs = []
-    nums = 10000
 
     with open("%s.fai" % refname, 'r') as f:
         for line in f:
             chrom,length,_,_,_ = line.strip().split("\t")
             length = int(length)
             if chroms and chrom not in chroms: continue
-            
-            if (length-nums-1) < 0: continue
+        
+            nums = int(Fraction * length * 0.5)
             start = randint(0, length-nums-1) 
             inputs.append((bamname, chrom, start, start + nums))
     
@@ -146,7 +146,7 @@ def calculate_coverage_stats(refname, bamname, chroms):
     else:
         pool.close()
     pool.join()
-        
+     
     mean,std_dev = summarize_counter(coverage)
     return int(mean),std_dev
 
@@ -200,7 +200,27 @@ def gen_reference_seq(refname, chroms):
 
     ff.close()
 
-def main(refname, mapname, bamname, min_num_pos, chroms, minq):
+def factorial(n):
+    if n == 1 or n == 0:
+        return 1
+    return n * factorial(n-1)
+
+def lander_waterman(coverage):
+    if coverage > 100: return 0.5*coverage,2.0*coverage
+
+    total = 0.0
+    hits = 0
+    mincov = None
+    while total < 0.999:
+        probability = pow(coverage, hits) * exp(-coverage) / factorial(hits)
+        total += probability
+        hits += 1
+        if total > 0.0 and mincov is None:
+            mincov = hits
+        maxcov = hits
+    return mincov,maxcov
+
+def main(refname, mapname, bamname, min_num_pos, chroms, minq, avgcov):
     global Num_threads, Fraction, Shift
 
     # get the average insert length
@@ -216,9 +236,12 @@ def main(refname, mapname, bamname, min_num_pos, chroms, minq):
     update("Generated the sequence hash")
 
     # calculate coverage cutoffs for locations I am going to consider
-    meancov,stdcov=calculate_coverage_stats(refname, bamname, chroms)
-    mincutoff = max(meancov - 3*stdcov, 0)
-    maxcutoff = meancov + 3*stdcov
+    if avgcov == None:
+        meancov,stdcov=calculate_coverage_stats(refname, bamname, chroms)
+        mincutoff = max(meancov - 3*stdcov, 0)
+        maxcutoff = meancov + 3*stdcov
+    else:
+        mincutoff,maxcutoff = lander_waterman(avgcov)
     update("Coverage cutoff: %d,%d" % (mincutoff,maxcutoff))
 
     # calculate the sum of all chromosome lengths which will be needed in case
@@ -293,9 +316,7 @@ def main(refname, mapname, bamname, min_num_pos, chroms, minq):
     std = np.std(orate)
     m = len(orate)
     mins = (m - sqrt(2*m)) * pow(std,2)
-    #print >> stderr, (m - sqrt(2*m)) * pow(std,2), (m + sqrt(2*m)) * pow(std,2)
-    
-    f = interpolate.UnivariateSpline(gc, orate, s = mins, ext = 0)
+    f = interpolate.UnivariateSpline(gc, orate, s = mins, ext = 3)
     
     for i in xrange(0, av_insert+1):
         numpos,numfrags = rates[i]
@@ -401,9 +422,9 @@ if __name__ == "__main__":
         version = version_file.read().strip()
 
     try:
-        opts, args = getopt(argv[1:], "hdt:s:m:f:c:vq:",
+        opts, args = getopt(argv[1:], "hdt:s:m:f:c:vq:a:",
                      ["help","debug","threads=","shift=","minpos=", 
-                      "fraction=", "chroms=", "version", "quality="])
+                      "fraction=", "chroms=", "version", "quality=", "avgcov="])
     except GetoptError, err:
         print str(err)
         print >> stderr, __doc__ % {'scriptVersion':version}
@@ -413,6 +434,7 @@ if __name__ == "__main__":
     chroms = None
     printversion = False
     min_quality = 30
+    avg_cov = None
 
     for o, a in opts:
         if o in ("-h", "--help"):
@@ -435,6 +457,8 @@ if __name__ == "__main__":
             printversion = True
         elif o in ("-q", "--quality"):  
             min_quality = int(a)
+        elif o in ("-a", "--avgcov"):
+            avg_cov = int(a)
         else:
             assert False, "unhandled option"
 
@@ -448,4 +472,4 @@ if __name__ == "__main__":
         print >> stderr, __doc__ % {'scriptVersion':version}
         exit(3)
 
-    main(args[0], args[1], args[2], min_num_pos, chroms, min_quality)
+    main(args[0], args[1], args[2], min_num_pos, chroms, min_quality, avg_cov)
