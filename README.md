@@ -31,6 +31,7 @@ This implementation proceeds in two separate steps. The first step takes in the 
                         rates [0.1]
         -c,--chroms   : use this comma-separated list of chromosome in calculating
                         the rates only [all]
+        -a,--avgcov   : average coverage to expect in the BAM file [auto]
 
    where the arguments are:
         reference.fa : the fasta file of reference sequence
@@ -44,6 +45,7 @@ This implementation proceeds in two separate steps. The first step takes in the 
        specifying the -f option as an integer > 1.
     2. A script convert_gem_to_bed with this distribution can be used to generate 
        mappable.bed from the output of gem-mappability.
+    3. The average coverage is calculated if it is not specified by the user. 
 ```
 
 The output from this script is a file which the following columns
