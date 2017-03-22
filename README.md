@@ -95,3 +95,13 @@ alignments.bam
        not only the uniquely mapped ones are counted.
 ```
 
+### Notes
+gem-mappability (http://algorithms.cnag.cat/wiki/The_GEM_library) can be used to compute the mappability of each region of a reference genome. In order to convert the output of gem-mappability to a format accepted by rdcleanr, it should be converted to a BED format file with only the mappable locations. If the output from gem-mappability is reference.gem.mappability, and the gem index is called reference.index.gem, then the following steps should be used
+
+```bash
+gem-2-wig -I reference.index.gem -i reference.gem.mappability -o tmp
+wigToBigWig tmp.wig tmp.sizes tmp.bigwig
+bigWigToBedGraph tmp.bigwig tmp.bedgraph
+cat tmp.bedgraph | awk '$$4 == 1' | cut -f 1,2,3 > reference.map.bed
+rm tmp.wig tmp.sizes tmp.bigwig tmp.bedgraph
+```
