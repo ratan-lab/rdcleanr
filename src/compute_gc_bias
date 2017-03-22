@@ -111,6 +111,8 @@ sizes.
                 numanalyzed += 1
             if numanalyzed == numrequired: break
 
+    lengths = lengths[0:numanalyzed]
+
     # remove outliers from consideration as that could affect the mean
     # significantly. Definition of outlier from here:
     # http://www.mathwords.com/o/outlier.htm
