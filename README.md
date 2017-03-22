@@ -25,26 +25,28 @@ This implementation proceeds in two separate steps. The first step takes in the 
         -d,--debug    : print debug information
         -t,--threads  : use these many threads [1]
         -s,--shift    : ignore these many bases at the edge of the fragments [0]
-        -m,--minpos   : trust rates only if the number of positions with GC value
-                        exceed this threshold [1000]
+        -m,--minpos   : trust rates only if the number of positions with GC
+                        value exceed this threshold [1000]
         -f,--fraction : subsample this fraction of positions to calculate the 
-                        rates [0.1]
-        -c,--chroms   : use this comma-separated list of chromosome in calculating
-                        the rates only [all]
+                        rates [0.01]
+        -c,--chroms   : use this comma-separated list of chromosome in 
+                        calculating the rates only [all]
+        -v,--version  : print version and exit
+        -q,--quality  : do not consider locations where the mean MQ is less
+                        than this threshold [30]
         -a,--avgcov   : average coverage to expect in the BAM file [auto]
 
    where the arguments are:
         reference.fa : the fasta file of reference sequence
-        mappable.bed : the file in BED format that includes regions that are mappable 
-                       reads of lengths used in this run
+        mappable.bed : the file in BED format that includes regions that are
+                       mappable reads of lengths used in this run
         alignments.bam : the alignments of the reads in BAM format 
-        
-        
+
     Notes:
     1. Optionally the user can specify the number of positions to sample by
        specifying the -f option as an integer > 1.
-    2. A script convert_gem_to_bed with this distribution can be used to generate 
-       mappable.bed from the output of gem-mappability.
+    2. A script convert_gem_to_bed with this distribution can be used to 
+       generate mappable.bed from the output of gem-mappability.
     3. The average coverage is calculated if it is not specified by the user. 
 ```
 
@@ -53,32 +55,32 @@ The output from this script is a file which the following columns
 GC     : G+C bases in this region
 numpos : number of positions in the (sub)sample with the G+C content specified in column 1
 frags  : number of fragments in the (sub)sample with the G+C content specified in column 1
-scale  : a multiplier of fragment count that should be used for positions with the G+C content 
-        specified in column 1 within the [0,L] range of the position
+scale1 : a multiplier of fragment count that should be used for positions with the G+C content  specified in column 1 within the [0,L] range of the position based on subsampling
+scale2 : a multiplier of fragment count that should be used for positions with the G+C content specified in column 1 after smoothing scale1
 ```
-Additionally the last line in the output adds information about L which is useful in the next step.
-
-The second script then takes this file and computes the corrected counts for locations that are 
-- mappable and 
-- we were able to calculate the scale for the associated GC content.
+The second script then takes this file and computes the corrected counts for locations (stretches of locations) that are mappable.
 
 It also bins the data into bins of size as specified by the user. This is implemented in correct_gc_bias, and can be used as follows:
 
 ```bash
     usage:
-        correct_gc_bias  [options] reference.fa reference.map rates.txt alignments.bam
+    correct_gc_bias [options] output.txt reference.fa reference.map rates.txt
+alignments.bam
 
     where the options are:
         -h,--help    : print usage and quit
         -d,--debug   : print debug information
         -t,--threads : use these many threads [1]
         -b,--binsize : number of mappable bases in a bin [100]
-        -l,--loess   : run additional loess correction 
-
+        -x,--noloess : do not run additional loess correction 
+        -m,--minspan : ignore mappable sections smaller than this [40]
+        -v,--version : print version and exit
+    
     where the arguments are:
+        output.txt   : the output file
         reference.fa : the fasta file of reference sequence
-        mappable.bed : the file in BED format that includes regions that are mappable 
-                       reads of lengths used in this run
+        mappable.bed : the file in BED format that includes regions that are
+                       mappable reads of lengths used in this run
         rates.txt    : the output from compute_gc_bias
         alignments.bam : the alignments of the reads in BAM format 
 
@@ -86,5 +88,10 @@ It also bins the data into bins of size as specified by the user. This is implem
     1. The loess correction is run on the binned counts to remove any bias
        that was not accounted for using the fragment model and could effect
        the data at that resolution.
+    2. The --minspan defaults work with reads aligned using BWA mem algorithm,
+       which requires a seed of 19. 
+    3. When using a reference.map that has all regions except the N's in the 
+       reference genome, the user should use --quality 0 so that all reads, and 
+       not only the uniquely mapped ones are counted.
 ```
 

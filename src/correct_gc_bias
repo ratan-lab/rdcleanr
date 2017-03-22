@@ -12,7 +12,8 @@ Version: %(scriptVersion)s
         -d,--debug   : print debug information
         -t,--threads : use these many threads [1]
         -b,--binsize : number of mappable bases in a bin [100]
-        -l,--loess   : run additional loess correction 
+        -x,--noloess : do not run additional loess correction 
+        -m,--minspan : ignore mappable sections smaller than this [40]
         -v,--version : print version and exit
     
     where the arguments are:
@@ -27,6 +28,11 @@ Version: %(scriptVersion)s
     1. The loess correction is run on the binned counts to remove any bias
        that was not accounted for using the fragment model and could effect
        the data at that resolution.
+    2. The --minspan defaults work with reads aligned using BWA mem algorithm,
+       which requires a seed of 19. 
+    3. When using a reference.map that has all regions except the N's in the 
+       reference genome, the user should use --quality 0 so that all reads, and 
+       not only the uniquely mapped ones are counted.
 """
 
 from sys import argv, stderr, stdin, exit, stdout, path
@@ -138,7 +144,6 @@ def _correct_region_gc(chrom, start, stop, bamname, rtmap):
     for aln in bamfile.fetch(chrom,start,stop):
         if aln.is_unmapped or aln.is_secondary or aln.is_supplementary or \
            aln.is_qcfail or aln.is_duplicate: continue
-        if aln.mapping_quality == 0: continue
     
         if aln.is_reverse:
             if aln.aend < start or aln.aend >= stop: continue
@@ -160,7 +165,7 @@ def _correct_region_gc(chrom, start, stop, bamname, rtmap):
     bamfile.close()
     return chrom,start,original,corrected
 
-def gen_reference_mq(refname, mapname, chroms=None):
+def gen_reference_mq(refname, mapname, readlength, chroms=None):
     """ Generate a map of mappable location.
     """
     global Mqmap
@@ -179,6 +184,7 @@ def gen_reference_mq(refname, mapname, chroms=None):
         for line in f:
             chrom,start,stop = line.strip().split("\t")
             if chroms and chrom not in chroms: continue
+            if (int(stop) - int(start)) < readlength: continue
             chrom_map = Mqmap[chrom]
             chrom_map[int(start):int(stop)] = True
 
@@ -195,7 +201,7 @@ def gen_reference_seq(refname, chroms=None):
 
     ff.close()
 
-def main(outname, refname, mapname, ratename, bamname, loess):
+def main(outname, refname, mapname, ratename, bamname, loess, minspan):
     global Winlength, Num_threads, Bin_size
 
     # read the rates for the various GC values
@@ -204,7 +210,7 @@ def main(outname, refname, mapname, ratename, bamname, loess):
     Winlength = maxdist
 
     # read the mappability information for the reference
-    gen_reference_mq(refname, mapname)
+    gen_reference_mq(refname, mapname, minspan)
     update("Generated the mappability hash")
  
     # read the sequence from the reference
@@ -305,16 +311,17 @@ if __name__ == "__main__":
         version = version_file.read().strip()
 
     try:
-        opts, args = getopt(argv[1:], "hdt:b:lv",
+        opts, args = getopt(argv[1:], "hdt:b:lvm:",
                      ["help", "debug", "threads=", "binsize=", "loess",
-                      "version"])
+                      "version" "minspan="])
     except GetoptError, err:
         print str(err)
         print >> stderr, __doc__ % {'scriptVersion' : version}
         exit(2) 
 
-    loess = False
+    loess = True
     printversion = False
+    minspan = 40
 
     for o, a in opts:
         if o in ("-h", "--help"):
@@ -326,8 +333,10 @@ if __name__ == "__main__":
             Num_threads = int(a)
         elif o in ("-b", "--binsize"):
             Bin_size = int(a)
-        elif o in ("-l", "--loess"):
-            loess = True
+        elif o in ("-x", "--noloess"):
+            loess = False
+        elif o in ("-m", "--minspan"):
+            minspan = int(a)
         elif o in ("-v", "--version"):
             printversion = True
         else:
@@ -344,4 +353,4 @@ if __name__ == "__main__":
         print >> stderr, __doc__ % {'scriptVersion' : version}
         exit(3)
 
-    main(args[0], args[1], args[2], args[3], args[4], loess)
+    main(args[0], args[1], args[2], args[3], args[4], loess, minspan)

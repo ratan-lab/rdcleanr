@@ -91,10 +91,10 @@ def calculate_inserts(filename):
     """Analyze numrequired fragments to infer information about the insert
 sizes.
     """
-    numrequired = 100000
+    numrequired = 500000
 
     bamfile = ps.AlignmentFile(filename, 'rb')
-    lengths = Counter()
+    lengths = np.empty(numrequired)
     numanalyzed = 0
 
     for aln in bamfile:
@@ -107,14 +107,21 @@ sizes.
                aln.mate_is_unmapped: continue
 
             if aln.is_proper_pair and aln.template_length > 0:
-                lengths[aln.template_length] += 1
+                lengths[numanalyzed] = aln.template_length
                 numanalyzed += 1
             if numanalyzed == numrequired: break
 
+    # remove outliers from consideration as that could affect the mean
+    # significantly. Definition of outlier from here:
+    # http://www.mathwords.com/o/outlier.htm
+    fq = np.percentile(lengths, 0.25)
+    tq = np.percentile(lengths, 0.75)
+    iqr = tq - fq
+    tmp = [x for x in lengths if x > (fq - 1.5*iqr) and x < (tq + 1.5*iqr)]    
+
     print >> stderr, "Sampled %d proper pairs to create a distribution"\
           % numanalyzed
-    mean,std_dev = summarize_counter(lengths)
-    return int(mean),std_dev
+    return int(np.mean(tmp)), np.std(tmp)
 
 def calculate_coverage_stats(refname, bamname, chroms):
     """Analyze numrequired positions to infer information about coverage
@@ -320,7 +327,7 @@ def main(refname, mapname, bamname, min_num_pos, chroms, minq, avgcov):
     
     for i in xrange(0, av_insert+1):
         numpos,numfrags = rates[i]
-        if numfrags == 0:
+        if numpos < min_num_pos or numfrags == 0:
             orate = None
         else:
             orate = meanrate*numpos/numfrags
