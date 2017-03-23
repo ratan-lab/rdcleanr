@@ -26,7 +26,7 @@ This implementation proceeds in two separate steps. The first step takes in the 
         -t,--threads  : use these many threads [1]
         -s,--shift    : ignore these many bases at the edge of the fragments [0]
         -m,--minpos   : trust rates only if the number of positions with GC
-                        value exceed this threshold [1000]
+                        value exceed this threshold [10000]
         -f,--fraction : subsample this fraction of positions to calculate the 
                         rates [0.01]
         -c,--chroms   : use this comma-separated list of chromosome in 
@@ -48,6 +48,8 @@ This implementation proceeds in two separate steps. The first step takes in the 
     2. A script convert_gem_to_bed with this distribution can be used to 
        generate mappable.bed from the output of gem-mappability.
     3. The average coverage is calculated if it is not specified by the user. 
+    4. The --minpos default of 10,000 positions works best for mammalian sized
+       genomes.
 ```
 
 The output from this script is a file which the following columns
