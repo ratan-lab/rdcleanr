@@ -82,6 +82,7 @@ Fraction = 0.01
 # Shared by all threads
 Mqmap = {}
 Seqmap = {}
+Mqsegs = {}
 
 def summarize_counter(counter):
     """Return the mean and std of the values in the Counter.
@@ -128,7 +129,7 @@ sizes.
 def calculate_coverage_stats(refname, bamname, chroms):
     """Analyze numrequired positions to infer information about coverage
     """
-    global Fraction, Num_threads
+    global Fraction, Mqsegs, Num_threads
     
     coverage = Counter()
     inputs = []
@@ -140,8 +141,16 @@ def calculate_coverage_stats(refname, bamname, chroms):
             if chroms and chrom not in chroms: continue
         
             nums = int(Fraction * length * 0.5)
-            start = randint(0, length-nums-1) 
-            inputs.append((bamname, chrom, start, start + nums))
+            chrom_segs = Mqsegs[chrom]
+
+            if len(chrom_segs) > 0:
+                indx = randint(0, len(chrom_segs) -1)
+                start = chrom_segs[indx][0]
+                end = chrom_segs[indx][1]
+            else:
+                start = randint(0, length-nums-1)  
+                end = start + nums
+            inputs.append((bamname, chrom, start, end))
     
     original_sigint_handler = sg.signal(sg.SIGINT, sg.SIG_IGN)
     pool = Pool(processes = Num_threads)
@@ -177,7 +186,7 @@ def _calculate_coverage(bamname, chrom, start, stop):
 def gen_reference_mq(refname, mapname, chroms):
     """ Generate a map of mappable location.
     """
-    global Mqmap
+    global Mqmap, Mqsegs
 
     # read in the length of the contigs, and assign memory for them
     with open("%s.fai" % refname, 'r') as f:
@@ -187,13 +196,17 @@ def gen_reference_mq(refname, mapname, chroms):
             assert chrom not in Mqmap
             if chroms and chrom not in chroms: continue
             Mqmap[chrom] = bitarray([0]* length)
+            Mqsegs[chrom] = []
 
     # read in the mappability information marking the mappable bases
     with open(mapname, 'r') as f:
         for line in f:
             chrom,start,stop = line.strip().split("\t")
             if chroms and chrom not in chroms: continue
+
             chrom_map = Mqmap[chrom]
+            if (int(stop)-int(start)) > 10000: 
+                Mqsegs[chrom].append((int(start),int(stop)))
             chrom_map[int(start):int(stop)] = True
 
 def gen_reference_seq(refname, chroms):
