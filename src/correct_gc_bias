@@ -27,9 +27,6 @@ Version: %(scriptVersion)s
     1. The loess correction is run on the binned counts to remove any bias
        that was not accounted for using the fragment model and could effect
        the data at that resolution.
-    2. When using a reference.map that has all regions except the N's in the 
-       reference genome, the user should use --quality 0 so that all reads, and 
-       not only the uniquely mapped ones are counted.
 """
 
 from sys import argv, stderr, stdin, exit, stdout, path
