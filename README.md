@@ -104,6 +104,6 @@ gem-mappability (http://algorithms.cnag.cat/wiki/The_GEM_library) can be used to
 gem-2-wig -I reference.index.gem -i reference.gem.mappability -o tmp
 wigToBigWig tmp.wig tmp.sizes tmp.bigwig
 bigWigToBedGraph tmp.bigwig tmp.bedgraph
-cat tmp.bedgraph | awk '$$4 == 1' | cut -f 1,2,3 > reference.map.bed
+cat tmp.bedgraph | awk '$4 == 1' | cut -f 1,2,3 > reference.map.bed
 rm tmp.wig tmp.sizes tmp.bigwig tmp.bedgraph
 ```
