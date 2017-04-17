@@ -11,9 +11,8 @@ Version: %(scriptVersion)s
         -h,--help    : print usage and quit
         -d,--debug   : print debug information
         -t,--threads : use these many threads [1]
-        -b,--binsize : number of mappable bases in a bin [100]
+        -b,--binsize : number of mappable bases in a bin [auto]
         -x,--noloess : do not run additional loess correction 
-        -m,--minspan : ignore mappable sections smaller than this [40]
         -v,--version : print version and exit
     
     where the arguments are:
@@ -28,9 +27,7 @@ Version: %(scriptVersion)s
     1. The loess correction is run on the binned counts to remove any bias
        that was not accounted for using the fragment model and could effect
        the data at that resolution.
-    2. The --minspan defaults work with reads aligned using BWA mem algorithm,
-       which requires a seed of 19. 
-    3. When using a reference.map that has all regions except the N's in the 
+    2. When using a reference.map that has all regions except the N's in the 
        reference genome, the user should use --quality 0 so that all reads, and 
        not only the uniquely mapped ones are counted.
 """
@@ -41,6 +38,7 @@ from itertools import izip
 from multiprocessing import Pool
 from collections import Counter
 from tempfile import NamedTemporaryFile
+from math import sqrt
 
 import shutil as sh
 import signal as sg
@@ -63,7 +61,7 @@ Winlength = -1
 Num_threads = 1
 
 # the bin size
-Bin_size = 100
+Bin_size = None
 
 Mqmap = {}
 Seqmap = {}
@@ -250,6 +248,43 @@ def main(outname, refname, mapname, ratename, bamname, loess, minspan):
     pool.join()
     update("Pools done")
 
+    # if not specified, calculate a good bin size to use
+    if Bin_size == None:
+        chrm = None
+        length = 0
+        with open("%s.fai" % refname, 'r') as f:
+            for line in f:
+                chrm,length,_,_,_ = line.strip().split("\t")
+                length = int(length)
+                break
+
+        ratio = 1
+        lastbs = 0
+
+        mask = np.ones(length, dtype = bool)
+        rcn = rawcounts[chrm]
+        for i,x in enumerate(rcn):
+            if x == -1: mask[i] = 0
+        arr = corrcounts[chrm]
+        arr = arr[mask]
+
+        while ratio < 4:
+            bs = lastbs + 50
+    
+            num = int(len(arr) * 1.0 / bs)
+            dat = np.zeros(num)
+            for i,x in enumerate(np.split(arr[:(num*bs)],num)):
+                dat[i] = sum(x)
+         
+            k = np.mean(dat)
+            v = np.std(dat)
+            ratio = k/v  
+            if debug_flag: update("Binsize %d : %f, %f, %f" % (bs, k, v, ratio))
+
+            lastbs = bs
+
+        Bin_size = lastbs
+
     # bin the corrected counts
     with open("%s.fai" % refname, 'r') as f, open(outname, 'w') as g:
         for line in f:
@@ -321,7 +356,7 @@ if __name__ == "__main__":
 
     loess = True
     printversion = False
-    minspan = 40
+    minspan = 1
 
     for o, a in opts:
         if o in ("-h", "--help"):
