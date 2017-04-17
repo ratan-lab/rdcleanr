@@ -35,6 +35,10 @@ This implementation proceeds in two separate steps. The first step takes in the 
         -q,--quality  : do not consider locations where the mean MQ is less
                         than this threshold [30]
         -a,--avgcov   : average coverage to expect in the BAM file [auto]
+        -i,--avgins   : average insert length to expect in the BAM file [auto]
+        -x,--stdins   : standard deviation of the insert length in the BAM 
+                        file [auto]
+
 
    where the arguments are:
         reference.fa : the fasta file of reference sequence
@@ -48,6 +52,10 @@ This implementation proceeds in two separate steps. The first step takes in the 
     2. A script convert_gem_to_bed with this distribution can be used to 
        generate mappable.bed from the output of gem-mappability.
     3. The average coverage is calculated if it is not specified by the user. 
+       The same is true for the mean and standard deviation of the insert 
+       length. All of these values are calculated from subsamples, so there 
+       is a probability for them to be inaccurate despite our best efforts. If 
+       possible these should be provided by the user.
     4. The --minpos default of 10,000 positions works best for mammalian sized
        genomes.
 ```
@@ -73,9 +81,8 @@ alignments.bam
         -h,--help    : print usage and quit
         -d,--debug   : print debug information
         -t,--threads : use these many threads [1]
-        -b,--binsize : number of mappable bases in a bin [100]
+        -b,--binsize : number of mappable bases in a bin [auto]
         -x,--noloess : do not run additional loess correction 
-        -m,--minspan : ignore mappable sections smaller than this [40]
         -v,--version : print version and exit
     
     where the arguments are:
@@ -90,11 +97,6 @@ alignments.bam
     1. The loess correction is run on the binned counts to remove any bias
        that was not accounted for using the fragment model and could effect
        the data at that resolution.
-    2. The --minspan defaults work with reads aligned using BWA mem algorithm,
-       which requires a seed of 19. 
-    3. When using a reference.map that has all regions except the N's in the 
-       reference genome, the user should use --quality 0 so that all reads, and 
-       not only the uniquely mapped ones are counted.
 ```
 
 ### Notes
