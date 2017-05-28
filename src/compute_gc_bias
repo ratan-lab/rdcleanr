@@ -322,6 +322,34 @@ def main(refname,mapname,bamname,min_num_pos,chroms,minq,avgcov,avgins,stdins):
     else:
         pool.close()
     pool.join()
+    update("Done with the first attempt")
+
+    # some of the GC values are under-represented due to sampling bias, so lets
+    # focus on those
+    left = []
+    for i in xrange(0, av_insert+1):
+        if rates[i][0] < min_num_pos: left.append(i)
+
+    _inputs = []
+    for inp in inputs:
+        x = list(inp)
+        x.append(left)
+        x = tuple(x)
+        _inputs.append(x)
+    inputs = _inputs
+
+    original_sigint_handler = sg.signal(sg.SIGINT, sg.SIG_IGN)
+    pool = Pool(processes = Num_threads)
+    sg.signal(sg.SIGINT, original_sigint_handler)
+
+    try:
+        for _rates in pool.imap_unordered(process_region_left,inputs):
+            rates += _rates
+    except KeyboardInterrupt:
+        pool.terminate()
+    else:
+        pool.close()
+    pool.join()
     update("Calculated the fragment rates from the subsample")
 
     # calculate the global rate
@@ -343,22 +371,13 @@ def main(refname,mapname,bamname,min_num_pos,chroms,minq,avgcov,avgins,stdins):
         gc.append(i)
         orate.append(meanrate*rates[i][0]/rates[i][1])
 
-    # lets try to predict the rates for the GC values where we could not
-    # calculate the rates. We do this by a one-dimensional smoothing spline fit
-    # to the known rates
-    std = np.std(orate)
-    m = len(orate)
-    mins = (m - sqrt(2*m)) * pow(std,2)
-    f = interpolate.UnivariateSpline(gc, orate, s = mins, ext = 3)
-    
     for i in xrange(0, av_insert+1):
         numpos,numfrags = rates[i]
         if numpos < min_num_pos or numfrags == 0:
-            orate = None
+            orate = "-"
         else:
             orate = meanrate*numpos/numfrags
-        mrate = f(i)
-        print tabout(i,numpos,numfrags,orate,mrate)
+        print tabout(i,numpos,numfrags,orate)
   
 def process_region(args):
     return _process_region(*args)
@@ -401,7 +420,7 @@ def _process_region(chrom,start,end,bamname,mincutoff,
     return rates
 
 def _process_region_left(chrom, start, end, bamname, mincutoff,
-                         maxcutoff, av_insert, minq, left):
+                         maxcutoff, av_insert, numselect, minq, left):
     global Shift, Mqmap, Seqmap
 
     bf = ps.AlignmentFile(bamname, 'rb')

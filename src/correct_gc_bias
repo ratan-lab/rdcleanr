@@ -68,7 +68,7 @@ def read_gc_rates(filename, bamname):
 
     with open(filename,'r') as f:
         for line in f:
-            dist,_,_,_,scale = line.strip().split("\t")
+            dist,_,_,scale = line.strip().split("\t")
             if scale != "-":
                 rtmap[int(dist)] = float(scale)
 
@@ -79,7 +79,7 @@ def read_gc_rates(filename, bamname):
 def correct_region_gc(args):
     return _correct_region_gc(*args)
 
-def _correct_region_gc(chrom, start, stop, bamname, rtmap):
+def _correct_region_gc(chrom, start, stop, bamname, rtmap, minqual):
     global Winlength, Seqmap, Mqmap
     
     mqmap = Mqmap[chrom]
@@ -139,6 +139,7 @@ def _correct_region_gc(chrom, start, stop, bamname, rtmap):
     for aln in bamfile.fetch(chrom,start,stop):
         if aln.is_unmapped or aln.is_secondary or aln.is_supplementary or \
            aln.is_qcfail or aln.is_duplicate: continue
+        if aln.mapping_quality < minqual : continue
     
         if aln.is_reverse:
             if aln.aend < start or aln.aend >= stop: continue
@@ -156,8 +157,12 @@ def _correct_region_gc(chrom, start, stop, bamname, rtmap):
             if (fgc not in rtmap) or (rgc not in rtmap): continue
             original[aln.pos-start] += 1
             corrected[aln.pos-start] += rtmap[fgc]
-
     bamfile.close()
+
+    # is there a Bin_size stretch where the count is zero, and the locations
+    # are mappable, but I am just ignoring them because I could not estimate 
+    # the rates. In that case, those should be included in this correction.$$$ 
+
     return chrom,start,original,corrected
 
 def gen_reference_mq(refname, mapname, readlength, chroms=None):
@@ -196,7 +201,7 @@ def gen_reference_seq(refname, chroms=None):
 
     ff.close()
 
-def main(outname, refname, mapname, ratename, bamname, loess, minspan):
+def main(outname, refname, mapname, ratename, bamname, loess, minspan, minqual):
     global Winlength, Num_threads, Bin_size
 
     # read the rates for the various GC values
@@ -227,7 +232,7 @@ def main(outname, refname, mapname, ratename, bamname, loess, minspan):
 
             partsize = int(ceil(length * 1.0 / Num_threads))
             for i in xrange(0, length, partsize):
-                inputs.append((chrom,i,min(i+partsize,length),bamname,rtmap))
+                inputs.append((chrom,i,min(i+partsize,length),bamname,rtmap,minqual))
 
     original_sigint_handler = sg.signal(sg.SIGINT, sg.SIG_IGN) 
     pool = Pool(processes = Num_threads)
@@ -343,9 +348,9 @@ if __name__ == "__main__":
         version = version_file.read().strip()
 
     try:
-        opts, args = getopt(argv[1:], "hdt:b:lvm:",
+        opts, args = getopt(argv[1:], "hdt:b:lvm:q:",
                      ["help", "debug", "threads=", "binsize=", "loess",
-                      "version" "minspan="])
+                      "version" "minspan=", "quality="])
     except GetoptError, err:
         print str(err)
         print >> stderr, __doc__ % {'scriptVersion' : version}
@@ -354,6 +359,7 @@ if __name__ == "__main__":
     loess = True
     printversion = False
     minspan = 1
+    minqual = 0
 
     for o, a in opts:
         if o in ("-h", "--help"):
@@ -371,6 +377,8 @@ if __name__ == "__main__":
             minspan = int(a)
         elif o in ("-v", "--version"):
             printversion = True
+        elif o in ("-q", "--quality"):
+            minqual = int(a)
         else:
             assert False, "unhandled option"
 
@@ -385,4 +393,4 @@ if __name__ == "__main__":
         print >> stderr, __doc__ % {'scriptVersion' : version}
         exit(3)
 
-    main(args[0], args[1], args[2], args[3], args[4], loess, minspan)
+    main(args[0], args[1], args[2], args[3], args[4], loess, minspan, minqual)

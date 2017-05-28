@@ -17,14 +17,13 @@ if("--help" %in% args) {
   q(save="no")
 }
 
-data = read.table(args[1])
-names(data) = c("gc", "numpos", "numfrags", "orate", "srate")
+data = read.table(args[1], na.strings = "-")
+names(data) = c("gc", "numpos", "numfrags", "rate")
 
 library(ggplot2)
 p = ggplot(data) +
-    geom_point(aes(x = gc, y = orate)) +
-    geom_line(aes(x = gc, y = srate)) +
-    ylim(0, max(data$orate)) +
+    geom_point(aes(x = gc, y = rate)) +
+    ylim(0, max(data$rate)) +
     xlab("GC") +
     ylab("Rate")
 
