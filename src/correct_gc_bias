@@ -348,8 +348,8 @@ if __name__ == "__main__":
         version = version_file.read().strip()
 
     try:
-        opts, args = getopt(argv[1:], "hdt:b:lvm:q:",
-                     ["help", "debug", "threads=", "binsize=", "loess",
+        opts, args = getopt(argv[1:], "hdt:b:xvm:q:",
+                     ["help", "debug", "threads=", "binsize=", "noloess",
                       "version" "minspan=", "quality="])
     except GetoptError, err:
         print str(err)
